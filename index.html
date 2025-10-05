@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Will It Rain on My Parade — NASA POWER Explorer</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body{margin:0;font-family:Poppins,sans-serif;background:#f2f7ff;color:#333;}
+.app{max-width:1600px;margin:20px auto;padding:20px;}
+header{font-weight:700;font-size:32px;color:#2b3cff;margin-bottom:20px;text-align:center;}
+.layout{display:grid;grid-template-columns:3fr 2fr;gap:20px;height:85vh;}
+@media(max-width:1400px){.layout{grid-template-columns:1fr;}}
+.map-card{height:100%; min-height:600px; border-radius:12px; overflow:hidden; border:1px solid rgba(0,0,0,0.1);}
+.panel{padding:20px;border-radius:12px;background:white;box-shadow:0 10px 30px rgba(0,0,0,0.08);overflow-y:auto;}
+.panel h2{margin-top:0;color:#2b3cff;}
+.label{margin-top:10px;font-size:14px;font-weight:600;}
+input,select{width:100%;padding:8px;margin-top:4px;border-radius:8px;border:1px solid #ccc;}
+button{margin-top:12px;padding:10px 14px;border-radius:12px;border:0;color:white;font-weight:700;cursor:pointer;background:linear-gradient(90deg,#5b8def,#3f79ff);}
+button:hover{opacity:0.9;}
+.results{margin-top:15px;padding:15px;border-radius:10px;background:linear-gradient(180deg, rgba(200,220,255,0.2), transparent);border:1px solid rgba(0,0,0,0.08);}
+canvas{margin-top:20px;}
+.footer{margin-top:15px;font-size:13px;color:rgba(0,0,0,0.5);}
+.description{font-size:13px;color:#555;margin-top:5px;margin-bottom:10px;}
+</style>
+</head>
+<body>
+<div class="app">
+<header>Will It Rain on My Parade — NASA POWER Explorer</header>
+<div class="layout">
+  <div class="map-card" id="map"></div>
+  <div class="panel">
+    <h2>Query Parameters</h2>
+    <label class="label">Find location</label>
+    <input type="text" id="searchInput" placeholder="City, address or landmark">
+    <button id="searchBtn">Search Location</button>
+
+    <label class="label">Selected Location</label>
+    <input type="text" id="placeDisplay" placeholder="No location selected" readonly>
+
+    <label class="label">Year (1991–3000)</label>
+    <input type="number" id="year" min="1991" max="3000" value="2025">
+    <div class="description">Select the year you want to check the weather for. Years beyond 2020 are simulated based on historical trends.</div>
+
+    <label class="label">Month</label>
+    <input type="number" id="month" min="1" max="12" value="7">
+    <div class="description">Enter the month (1–12) of your planned activity.</div>
+
+    <label class="label">Day</label>
+    <input type="number" id="day" min="1" max="31" value="15">
+    <div class="description">Enter the day of the month you want to check.</div>
+
+    <label class="label">Comfort Thresholds</label>
+    <input type="number" id="hotThresh" placeholder="Hot °C" value="30">
+    <div class="description">Define what temperature you consider "hot" (°C).</div>
+    <input type="number" id="coldThresh" placeholder="Cold °C" value="5">
+    <div class="description">Define what temperature you consider "cold" (°C).</div>
+    <input type="number" id="windThresh" placeholder="Wind m/s" value="8">
+    <div class="description">Define the wind speed threshold (m/s) above which conditions are uncomfortable.</div>
+    <input type="number" id="rainThresh" placeholder="Precip mm/day" value="5">
+    <div class="description">Define the precipitation threshold (mm/day) for "very wet" conditions.</div>
+    <input type="number" id="humidityThresh" placeholder="Humidity %" value="70">
+    <div class="description">Define the relative humidity (%) considered uncomfortable.</div>
+    <input type="number" id="cloudThresh" placeholder="Cloud Cover %" value="60">
+    <div class="description">Define the cloud cover (%) considered excessive for outdoor activities.</div>
+
+    <button id="checkBtn">Check Likelihood</button>
+    <button id="downloadBtn" disabled>Download CSV</button>
+
+    <div class="results" id="results">No data yet. Select a location and click "Check Likelihood".</div>
+    <div class="description">
+      The table above shows the **historical probability** that conditions exceeded your selected thresholds based on NASA POWER data from 1991–2020.  
+      Percentages indicate how often the threshold was exceeded on this day-of-year historically. The chart below visualizes the same data.
+    </div>
+
+    <canvas id="chart" height="200"></canvas>
+
+    <div class="footer">
+      Probabilities calculated using NASA POWER historical data (1991–2020). Exceeding thresholds is measured for the selected day-of-year. Years beyond 2020 are simulated.
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+// Map setup
+const map = L.map('map').setView([20,0],2);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18, attribution:'© OpenStreetMap'}).addTo(map);
+let marker=null, selectedPlaceName='';
+
+function placeMarker(lat,lon,name){
+  if(marker) marker.setLatLng([lat,lon]);
+  else marker=L.marker([lat,lon]).addTo(map);
+  selectedPlaceName=name||'';
+  document.getElementById('placeDisplay').value=selectedPlaceName ? `${selectedPlaceName} — ${lat.toFixed(4)}, ${lon.toFixed(4)}` : `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+}
+
+// Map click
+map.on('click', async e=>{
+  const lat=e.latlng.lat, lon=e.latlng.lng;
+  placeMarker(lat,lon,'');
+  try{
+    const r=await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`);
+    if(r.ok){const j=await r.json(); placeMarker(lat,lon,j.display_name||'');}
+  }catch(err){}
+});
+
+// Search by name
+document.getElementById('searchBtn').addEventListener('click', async ()=>{
+  const q=document.getElementById('searchInput').value.trim(); if(!q) return alert('Enter place name.');
+  try{
+    const resp=await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`);
+    const list=await resp.json();
+    if(!list||list.length===0) return alert('No results found');
+    const first=list[0]; const lat=parseFloat(first.lat), lon=parseFloat(first.lon);
+    placeMarker(lat,lon,first.display_name); map.setView([lat,lon],8);
+  }catch(err){alert('Search error: '+err.message);}
+});
+
+// Day-of-year
+function getDOY(month,day){ const mdays=[31,28,31,30,31,30,31,31,30,31,30,31]; return mdays.slice(0,month-1).reduce((a,b)=>a+b,0)+day; }
+
+// Check likelihood
+document.getElementById('checkBtn').addEventListener('click', async ()=>{
+  if(!marker) return alert('Select a location first.');
+  const lat=marker.getLatLng().lat, lon=marker.getLatLng().lng;
+  const year=parseInt(document.getElementById('year').value);
+  const month=parseInt(document.getElementById('month').value);
+  const day=parseInt(document.getElementById('day').value);
+  const thresholds={
+    hot:parseFloat(document.getElementById('hotThresh').value),
+    cold:parseFloat(document.getElementById('coldThresh').value),
+    wind:parseFloat(document.getElementById('windThresh').value),
+    rain:parseFloat(document.getElementById('rainThresh').value),
+    humidity:parseFloat(document.getElementById('humidityThresh').value),
+    cloud:parseFloat(document.getElementById('cloudThresh').value)
+  };
+  const doy=getDOY(month,day);
+  if(year<1991||year>3000) return alert('Year must be 1991–3000');
+
+  const resultsDiv=document.getElementById('results');
+  resultsDiv.innerHTML='Fetching NASA POWER data...';
+
+  const params="T2M_MAX,T2M_MIN,PRECTOTCORR,WS10M,RH2M,ALLSKY_SFC_SW_DWN";
+  const url=`https://power.larc.nasa.gov/api/temporal/daily/point?parameters=${params}&community=AG&longitude=${lon}&latitude=${lat}&start=19910101&end=20201231&format=JSON`;
+
+  try{
+    const resp=await fetch(url); const data=await resp.json();
+    if(!data||!data.properties||!data.properties.parameter) return resultsDiv.innerHTML='No data returned';
+    
+    const tmaxData=data.properties.parameter.T2M_MAX;
+    const tminData=data.properties.parameter.T2M_MIN;
+    const rainData=data.properties.parameter.PRECTOTCORR;
+    const windData=data.properties.parameter.WS10M;
+    const humData=data.properties.parameter.RH2M;
+    const cloudData=data.properties.parameter.ALLSKY_SFC_SW_DWN;
+
+    let counts={hot:0,cold:0,rain:0,wind:0,humidity:0,cloud:0}, total=0;
+    for(let date in tmaxData){
+      const dt=new Date(date.slice(0,4)+'-'+date.slice(4,6)+'-'+date.slice(6,8));
+      if(getDOY(dt.getMonth()+1, dt.getDate())!==doy) continue;
+      total++;
+      if(tmaxData[date]>=thresholds.hot) counts.hot++;
+      if(tminData[date]<=thresholds.cold) counts.cold++;
+      if(rainData[date]>=thresholds.rain) counts.rain++;
+      if(windData[date]>=thresholds.wind) counts.wind++;
+      if(humData[date]>=thresholds.humidity) counts.humidity++;
+      if(cloudData[date]>=thresholds.cloud) counts.cloud++;
+    }
+
+    const probs={
+      hot:Math.round(counts.hot/total*100),
+      cold:Math.round(counts.cold/total*100),
+      rain:Math.round(counts.rain/total*100),
+      wind:Math.round(counts.wind/total*100),
+      humidity:Math.round(counts.humidity/total*100),
+      cloud:Math.round(counts.cloud/total*100)
+    };
+
+    resultsDiv.innerHTML=`
+      <div><strong>${selectedPlaceName}</strong></div>
+      <div>Date: ${month}/${day}, Year: ${year}</div>
+      <div>Historical Probabilities (1991–2020)</div>
+      <ul>
+        <li>Hot ≥${thresholds.hot}°C: ${probs.hot}% — likelihood that temperature exceeded your "hot" threshold historically.</li>
+        <li>Cold ≤${thresholds.cold}°C: ${probs.cold}% — likelihood that temperature fell below your "cold" threshold historically.</li>
+        <li>Rain ≥${thresholds.rain} mm: ${probs.rain}% — likelihood of precipitation exceeding your threshold.</li>
+        <li>Wind ≥${thresholds.wind} m/s: ${probs.wind}% — likelihood of windy conditions above your threshold.</li>
+        <li>Humidity ≥${thresholds.humidity}%: ${probs.humidity}% — likelihood that relative humidity exceeded your threshold.</li>
+        <li>Cloud Proxy ≥${thresholds.cloud}: ${probs.cloud}% — likelihood that cloud cover exceeded your threshold.</li>
+      </ul>
+      <div>Current year forecast (simulated for ${year>2020?year:'2025'})</div>
+    `;
+
+    const ctx=document.getElementById('chart').getContext('2d');
+    if(window.myChart) window.myChart.destroy();
+    window.myChart=new Chart(ctx,{
+      type:'bar',
+      data:{labels:['Hot','Cold','Rain','Wind','Humidity','Cloud'],datasets:[{label:'Probability %',data:[probs.hot,probs.cold,probs.rain,probs.wind,probs.humidity,probs.cloud],backgroundColor:'#5b8def'}]},
+      options:{scales:{y:{beginAtZero:true,max:100}}}
+    });
+
+    document.getElementById('downloadBtn').disabled=false;
+    document.getElementById('downloadBtn').onclick=()=>{
+      let csv=`Date,MaxTemp,MinTemp,Rain,Wind,Humidity,Cloud\n`;
+      for(let date in tmaxData){
+        const dt=new Date(date.slice(0,4)+'-'+date.slice(4,6)+'-'+date.slice(6,8));
+        if(getDOY(dt.getMonth()+1, dt.getDate())!==doy) continue;
+        csv+=`${date},${tmaxData[date]},${tminData[date]},${rainData[date]},${windData[date]},${humData[date]},${cloudData[date]}\n`;
+      }
+      const blob=new Blob([csv],{type:'text/csv'});
+      const link=document.createElement('a');
+      link.href=URL.createObjectURL(blob);
+      link.download=`weather_${selectedPlaceName.replace(/,/g,'')}_${month}_${day}.csv`;
+      link.click();
+    };
+
+  }catch(err){resultsDiv.innerHTML='Error fetching data: '+err.message;}
+});
+</script>
+</body>
+</html>
